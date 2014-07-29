@@ -119,20 +119,24 @@ static bool http_body_get(const char* http_resp, char* body, size_t max_body_len
       {
         body = (char*) &http_resp[i];
         printf("I IS %i\n", i);
+        //memcpy(body, &http_resp[i], max_body_length - i);
         return true;
       }
     }
     else
+    {
       j = 0;
+    }
   }
   return false;
 }
 
-static void print(char* msg, uint32_t len)
+static void print(uint8_t* msg, uint32_t len)
 {
+  printf("-----------------\n");
   uint32_t i = 0;
   for (; i < len; ++i)
-    printf("%c", msg[i]);
+    printf("0x%X ", msg[i]);
   printf("\n");
 }  
 
@@ -165,12 +169,7 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
 
   bcopy((char*) server->h_addr, (char*) &server_addr.sin_addr.s_addr, server->h_length);
   server_addr.sin_port = htons(portno);
-  struct timeval tv;
 
-  tv.tv_sec = 0;  
-  tv.tv_usec = 2000;  
-
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
   /* create TCP connection to host */
   if (connect(sock, (struct sockaddr*) &server_addr, sizeof(server_addr)) < 0)
     return HTTP_ERR_CONNECTING;
@@ -187,38 +186,53 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
     return HTTP_ERR_WRITING;
 
 
-  char resp_str[80000];
+  uint8_t resp_str[80000];
   uint32_t tot_len = 0;
 
   printf("RESPONSE: \n");
-  sleep(1);
   do{
     bzero(&resp_str[tot_len], 80000 - tot_len);
-    len = recv(sock, resp_str, 80000, 0);
+    len = recv(sock, &resp_str[tot_len], 80000, 0);
 
-    if (len < 0)
+    if (len <= 0)
       break;
 
-    print(&resp_str[tot_len], len);
+  //  print(&resp_str[tot_len], len);
     tot_len += len;
 
   } while (len > 0);
+
   printf("\n\n.......................................................\n\n");
   long dest_len = 80000;
-  long body_len = 80000;
   uint8_t dest[80000];
-  uint8_t body[80000];
+  uint8_t* body = strstr(resp_str, "\r\n\r\n") + 4;
 
+  long body_len = tot_len - (body - resp_str);
 
+  z_stream defstream;
+  defstream.zalloc = Z_NULL;
+  defstream.zfree = Z_NULL;
+  defstream.opaque = Z_NULL;
+  print(&body[0], body_len);
+  z_stream infstream;
+  infstream.zalloc = Z_NULL;
+  infstream.zfree = Z_NULL;
+  infstream.opaque = Z_NULL;
+  // setup "b" as the input and "c" as the compressed output
+  infstream.avail_in = (uInt)((char*)defstream.next_out - (char*) body); // size of input
+  infstream.next_in = (Bytef *)body; // input char array
+  infstream.avail_out = (uInt)sizeof(dest); // size of output
+  infstream.next_out = (Bytef *)dest; // output char array
 
-  if (!http_body_get(resp_str, body, 80000))
-    printf("uffda\n");
-
-  int compret = uncompress(dest, &dest_len, body, body_len);
-//  printf("COMPRET: %i\n", compret);
-
+  // the actual DE-compression work.
+  inflateInit(&infstream);
+  inflate(&infstream, Z_NO_FLUSH);
+  inflateEnd(&infstream);
+  //int compret = uncompress(dest, &dest_len, body, body_len);
+  //printf("COMPRET: %i\n", compret);
+  printf("---------------------------------------\n\n");
   printf("%s\n", dest);
-
+  //print(body, 80000);
   close(sock);
 
   return HTTP_SUCCESS;
@@ -247,7 +261,7 @@ static void test_addr_dissect(char* addr)
 
 int main(void)
 {
-  system("clear");
+  //system("clear");
   char* addr1 = "https://api.stackexchange.com/2.2/search?order=desc&sort=activity&intitle=chmod&site=stackoverflow";
   char* addr2 = "folk.ntnu.no/trondesn/index.html";
   response_t resp;
