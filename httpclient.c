@@ -1,7 +1,5 @@
 #include "httpclient.h"
 #include <stdlib.h>
-#include <jansson.h>
-#include <wchar.h>
 #include <zlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -331,18 +329,4 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
   socket_close(sock);
 
   return HTTP_SUCCESS;
-}
-
-
-int main(void)
-{
-  system("clear");
-  char* addr1 = "https://api.stackexchange.com/2.2/search?order=desc&sort=activity&intitle=chmod&site=stackoverflow";
-  char* addr2 = "folk.ntnu.no/trondesn/index.html";
-  response_t resp;
-
-  http_ret_t status = http_request(addr2, HTTP_REQ_GET, &resp);
-  
-  printf("%s\n", resp.contents);
-  print_status(status);
 }
