@@ -29,21 +29,17 @@ typedef enum
   HTTP_ERR_READING
 } http_ret_t;
 
-typedef struct
-{
-  char* host_site;
-  char* server_type;
-  socket_t socket;
-} server_t;
 
-
-typedef struct
+typedef struct 
 {
-  server_t* server;
-  char* last_modified;
   char* content_type;
-  char* charset;
-  char* connection;
+  char* encoding;
+  uint16_t status_code;
+} http_header_t;
+
+typedef struct
+{
+  http_header_t* p_header;
   uint32_t length;
   char* contents;
 } response_t;

@@ -1,5 +1,6 @@
 #include "httpclient.h"
 #include <stdlib.h>
+#include <jansson.h>
 #include <wchar.h>
 #include <zlib.h>
 #include <stdio.h>
@@ -12,6 +13,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+
+
+
 
 #define HTTP_1_1_STR "HTTP/1.1"
 
@@ -28,6 +32,21 @@ static const char* HTTP_REQUESTS[] =
   "PATCH"
 };
 
+
+static void word_to_string(const char* const word, char** str)
+{
+  uint32_t i = 0;
+  while (word[i] == ' ' || word[i] == '\r' || word[i] == '\n' || word[i] == '\0')
+    ++i;
+
+  uint32_t start = i;
+
+  while (word[i] != ' ' && word[i] != '\r' && word[i] != '\n')
+    ++i;
+  
+  *str = (char*) malloc(i - start);
+  memcpy(*str, &word[start], i - start);
+}
 
 static bool dissect_address(const char* address, char* host, const size_t max_host_length, char* resource, const size_t max_resource_length)
 {
@@ -69,7 +88,7 @@ static void print_status(http_ret_t status)
   {
     case HTTP_SUCCESS:
       printf("SUCCESS\n");
-      break;
+      return;
     case HTTP_ERR_OPENING_SOCKET:
       printf("ERROR: OPENING SOCKET\n");
       break;
@@ -136,60 +155,130 @@ static void print(uint8_t* msg, uint32_t len)
   printf("-----------------\n");
   uint32_t i = 0;
   for (; i < len; ++i)
-    printf("0x%X ", msg[i]);
+    printf("%2X ", msg[i]);
   printf("\n");
 }  
 
-http_ret_t http_request(const char* address, const http_req_t http_req, response_t* resp)
+static void socket_set_timeout(socket_t socket, uint32_t seconds, uint32_t usec)
+{
+  struct timeval tv;
+
+  tv.tv_sec = seconds;
+  tv.tv_usec = usec;
+
+  setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+}
+
+static socket_t socket_open(struct hostent* host, int portno)
+{
+  socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
+  
+  if (sock < 0)
+    return -1;
+
+  struct sockaddr_in server_addr;
+
+  memset((uint8_t*) &server_addr, 0, sizeof(server_addr));
+
+  server_addr.sin_family = AF_INET;
+
+  memcpy((uint8_t*) &server_addr.sin_addr.s_addr, (uint8_t*) host->h_addr, host->h_length);
+
+  server_addr.sin_port = htons(portno);
+
+  /* create TCP connection to host */
+  int res =  connect(sock, (struct sockaddr*) &server_addr, sizeof(server_addr));
+  if (res < 0)
+  {
+    printf("RESULT: %i\n", res);
+    return -1;
+  }
+
+  return sock;
+} 
+
+static void socket_close(socket_t socket)
+{
+  if (socket >= 0)
+    close(socket);
+}
+
+static void dissect_header(char* data, response_t* p_resp)
+{
+  p_resp->p_header = (http_header_t*) malloc(sizeof(http_header_t));
+
+  char* content = data;
+  const char* header_end = strstr(content, "\r\n\r\n");
+  
+  content = strchr(data, ' ');
+  if (content == NULL)
+    return;
+  
+  p_resp->p_header->status_code = atoi(content);
+  p_resp->p_header->content_type = NULL;
+  p_resp->p_header->encoding = NULL;
+
+  while (content <= header_end)
+  {
+    if (content == NULL)
+      return;
+    content = strstr(content, "\r\n");
+    if (content == NULL)
+      return;
+    content += 2;
+
+    if (strstr(content, "Content-Type:") == content)
+    {
+      content = strchr(content, ' ');
+      word_to_string(content, &p_resp->p_header->content_type);
+    }
+    else if (strstr(content, "Content-Encoding:") == content)
+    {
+      content = strchr(content, ' ');
+      word_to_string(content, &p_resp->p_header->encoding);
+    }
+  }
+}
+ 
+http_ret_t http_request(const char* address, const http_req_t http_req, response_t* p_resp)
 {
   int portno = 80;
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0)
-    return HTTP_ERR_OPENING_SOCKET;
-
   struct hostent* server;
 
-  char host_addr[128];
-  char resource_addr[128];
+  char host_addr[256];
+  char resource_addr[256];
 
-  if (!dissect_address(address, host_addr, 128, resource_addr, 128))
+  if (!dissect_address(address, host_addr, 256, resource_addr, 256))
     return HTTP_ERR_DISSECT_ADDR;
 
-
+  /* do DNS lookup */
   server = gethostbyname(host_addr);
 
   if (server == NULL)
     return HTTP_ERR_NO_SUCH_HOST;
+  
+  /* open socket to host */
+  socket_t sock = socket_open(server, portno);
 
-  struct sockaddr_in server_addr;
+  if (sock < 0)
+    return HTTP_ERR_OPENING_SOCKET;
 
-  bzero((char*) &server_addr, sizeof(server_addr));
+  /* Default timeout is too long */
+  socket_set_timeout(sock, 0, 500000);
 
-  server_addr.sin_family = AF_INET;
-
-  bcopy((char*) server->h_addr, (char*) &server_addr.sin_addr.s_addr, server->h_length);
-  server_addr.sin_port = htons(portno);
-
-  /* create TCP connection to host */
-  if (connect(sock, (struct sockaddr*) &server_addr, sizeof(server_addr)) < 0)
-    return HTTP_ERR_CONNECTING;
-
-  char http_req_str[256];
+  char http_req_str[512];
 
   build_http_request(host_addr, resource_addr, http_req, http_req_str, 256);
 
-  printf("REQ: \n%s\n", http_req_str);
-
+  /* send http request */
   int len = write(sock, http_req_str, strlen(http_req_str));
 
   if (len < 0)
     return HTTP_ERR_WRITING;
 
-
   uint8_t resp_str[80000];
   uint32_t tot_len = 0;
-
-  printf("RESPONSE: \n");
+  
   do{
     bzero(&resp_str[tot_len], 80000 - tot_len);
     len = recv(sock, &resp_str[tot_len], 80000, 0);
@@ -197,76 +286,63 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
     if (len <= 0)
       break;
 
-  //  print(&resp_str[tot_len], len);
     tot_len += len;
 
   } while (len > 0);
 
-  printf("\n\n.......................................................\n\n");
-  long dest_len = 80000;
-  uint8_t dest[80000];
   uint8_t* body = strstr(resp_str, "\r\n\r\n") + 4;
-
-  long body_len = tot_len - (body - resp_str);
-
-  z_stream defstream;
-  defstream.zalloc = Z_NULL;
-  defstream.zfree = Z_NULL;
-  defstream.opaque = Z_NULL;
-  print(&body[0], body_len);
-  z_stream infstream;
-  infstream.zalloc = Z_NULL;
-  infstream.zfree = Z_NULL;
-  infstream.opaque = Z_NULL;
-  // setup "b" as the input and "c" as the compressed output
-  infstream.avail_in = (uInt)((char*)defstream.next_out - (char*) body); // size of input
-  infstream.next_in = (Bytef *)body; // input char array
-  infstream.avail_out = (uInt)sizeof(dest); // size of output
-  infstream.next_out = (Bytef *)dest; // output char array
-
-  // the actual DE-compression work.
-  inflateInit(&infstream);
-  inflate(&infstream, Z_NO_FLUSH);
-  inflateEnd(&infstream);
-  //int compret = uncompress(dest, &dest_len, body, body_len);
-  //printf("COMPRET: %i\n", compret);
-  printf("---------------------------------------\n\n");
-  printf("%s\n", dest);
-  //print(body, 80000);
-  close(sock);
-
-  return HTTP_SUCCESS;
-
-}
+  uint32_t header_len = (body - resp_str);
+  uint32_t body_len = (tot_len - header_len);
 
 
+  /* place data in response header */
+  dissect_header(resp_str, p_resp);
 
-
-static void test_addr_dissect(char* addr)
-{
-  char host[128];
-  char resource[128];
-  printf("\n---------------------------------\n");
-  if (dissect_address(addr, host, 128, resource, 128))
+ 
+  /* if contents are compressed, uncompress it before placing it in the struct */
+  if (p_resp->p_header->encoding != NULL && strstr(p_resp->p_header->encoding, "gzip") != NULL)
   {
-    printf("ADDR:\t\t%s\nHOST: \t\t%s\nRESOURCE:\t%s\n", addr, host, resource);
+    /* content length is always stored in the 4 last bytes */
+    uint32_t content_len;
+    memcpy(&content_len, resp_str + tot_len - 4, 4);
+
+    p_resp->contents = (char*) malloc(content_len * 2);
+    
+    z_stream infstream;
+    infstream.avail_in = (uInt)(body_len);
+    infstream.next_in = (Bytef *)body; 
+    infstream.avail_out = (uInt)content_len;
+    infstream.next_out = (Bytef *)p_resp->contents;
+
+    // the actual DE-compression work.
+    inflateInit2(&infstream, 16 + MAX_WBITS);
+    inflate(&infstream, Z_NO_FLUSH);
+    inflateEnd(&infstream);
+
+    p_resp->length = content_len;
   }
   else
   {
-    printf("---- DISSECT FAILED: %s\n", addr);
+    p_resp->contents = (char*) malloc(body_len);
+    memcpy(p_resp->contents, body, body_len);
+    p_resp->length = body_len;
   }
-  fflush(stdout);
+
+  socket_close(sock);
+
+  return HTTP_SUCCESS;
 }
 
 
 int main(void)
 {
-  //system("clear");
+  system("clear");
   char* addr1 = "https://api.stackexchange.com/2.2/search?order=desc&sort=activity&intitle=chmod&site=stackoverflow";
   char* addr2 = "folk.ntnu.no/trondesn/index.html";
   response_t resp;
 
-  http_ret_t status = http_request(addr1, HTTP_REQ_GET, &resp);
-
+  http_ret_t status = http_request(addr2, HTTP_REQ_GET, &resp);
+  
+  printf("%s\n", resp.contents);
   print_status(status);
 }
