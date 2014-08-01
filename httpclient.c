@@ -54,14 +54,20 @@ static bool dissect_address(const char* address, char* host, const size_t max_ho
 
   char* slash_pos = strchr(start_pos, '/');
 
-  /* guards to avoid segfaults: */
-  if (slash_pos == NULL)
-    return false;
+  /* no resource, send request to index.html*/
+  if (slash_pos == NULL || slash_pos[1] == '\0')
+  {
+    strcpy(host, start_pos);
+
+    /* remove slash from host if any */
+    if (slash_pos != NULL)
+      strchr(host, '/')[0] = '\0';
+
+    strcpy(resource, "/index.html");
+    return true;
+  }
 
   char* addr_end = strchr(slash_pos, '\0');
-
-  if (slash_pos == addr_end - 1)
-    return false;
 
   if (start_pos >= slash_pos - 1)
     return false;
@@ -135,8 +141,6 @@ static bool http_body_get(const char* http_resp, char* body, size_t max_body_len
       if (j == sizeof(matchseq))
       {
         body = (char*) &http_resp[i];
-        printf("I IS %i\n", i);
-        //memcpy(body, &http_resp[i], max_body_length - i);
         return true;
       }
     }
@@ -188,7 +192,6 @@ static socket_t socket_open(struct hostent* host, int portno)
   int res =  connect(sock, (struct sockaddr*) &server_addr, sizeof(server_addr));
   if (res < 0)
   {
-    printf("RESULT: %i\n", res);
     return -1;
   }
 
@@ -201,7 +204,7 @@ static void socket_close(socket_t socket)
     close(socket);
 }
 
-static void dissect_header(char* data, response_t* p_resp)
+static void dissect_header(char* data, http_response_t* p_resp)
 {
   p_resp->p_header = (http_header_t*) malloc(sizeof(http_header_t));
 
@@ -238,8 +241,12 @@ static void dissect_header(char* data, response_t* p_resp)
   }
 }
  
-http_ret_t http_request(const char* address, const http_req_t http_req, response_t* p_resp)
+http_response_t* http_request(const char* address, const http_req_t http_req)
 {
+  http_response_t* p_resp = (http_response_t*) malloc(sizeof(http_response_t));
+  memset(p_resp, 0, sizeof(http_response_t));
+  
+
   int portno = 80;
   struct hostent* server;
 
@@ -247,19 +254,28 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
   char resource_addr[256];
 
   if (!dissect_address(address, host_addr, 256, resource_addr, 256))
-    return HTTP_ERR_DISSECT_ADDR;
+  {
+    p_resp->status = HTTP_ERR_DISSECT_ADDR;
+    return p_resp;
+  }
 
   /* do DNS lookup */
   server = gethostbyname(host_addr);
 
   if (server == NULL)
-    return HTTP_ERR_NO_SUCH_HOST;
+  {
+    p_resp->status = HTTP_ERR_NO_SUCH_HOST;
+    return p_resp;
+  }
   
   /* open socket to host */
   socket_t sock = socket_open(server, portno);
 
   if (sock < 0)
-    return HTTP_ERR_OPENING_SOCKET;
+  {
+    p_resp->status = HTTP_ERR_OPENING_SOCKET;
+    return p_resp;
+  }
 
   /* Default timeout is too long */
   socket_set_timeout(sock, 0, 500000);
@@ -272,30 +288,33 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
   int len = write(sock, http_req_str, strlen(http_req_str));
 
   if (len < 0)
-    return HTTP_ERR_WRITING;
+  {
+    p_resp->status = HTTP_ERR_WRITING;
+    return p_resp;
+  }
 
   uint8_t resp_str[80000];
   uint32_t tot_len = 0;
-  
+  uint32_t cycles = 0;
   do{
-    bzero(&resp_str[tot_len], 80000 - tot_len);
+    memset(&resp_str[tot_len], 0, 80000 - tot_len);
     len = recv(sock, &resp_str[tot_len], 80000, 0);
 
-    if (len <= 0)
+    if (len <= 0 && cycles > 0)
       break;
 
     tot_len += len;
+    ++cycles;
 
-  } while (len > 0);
+  } while (true);
 
+  /* header ends with an empty line */
   uint8_t* body = strstr(resp_str, "\r\n\r\n") + 4;
   uint32_t header_len = (body - resp_str);
   uint32_t body_len = (tot_len - header_len);
 
-
   /* place data in response header */
   dissect_header(resp_str, p_resp);
-
  
   /* if contents are compressed, uncompress it before placing it in the struct */
   if (p_resp->p_header->encoding != NULL && strstr(p_resp->p_header->encoding, "gzip") != NULL)
@@ -319,14 +338,19 @@ http_ret_t http_request(const char* address, const http_req_t http_req, response
 
     p_resp->length = content_len;
   }
-  else
+  else if (body_len > 0)
   {
     p_resp->contents = (char*) malloc(body_len);
     memcpy(p_resp->contents, body, body_len);
     p_resp->length = body_len;
   }
+  else
+  {
+    p_resp->status = HTTP_ERR_READING;
+    return p_resp;
+  }
 
   socket_close(sock);
 
-  return HTTP_SUCCESS;
+  return p_resp;
 }

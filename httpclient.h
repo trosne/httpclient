@@ -42,7 +42,8 @@ typedef struct
   http_header_t* p_header;
   uint32_t length;
   char* contents;
-} response_t;
+  http_ret_t status;
+} http_response_t;
 
 
 /**
@@ -51,13 +52,13 @@ typedef struct
 * @param http_req: HTTP request type, any of the HTTP_REQ_* defines in the module
 * @param resp: pointer to a reponse_t struct that will receive the response to the request
 */
-http_ret_t http_request(const char* address, const http_req_t http_req, response_t* resp);
+http_response_t* http_request(const char* address, const http_req_t http_req);
 
 /**
 * @brief convenience function to dispose of the response struct
 * @param resp: response struct to free
 */
-void http_resp_dispose(response_t* resp);
+//void http_resp_dispose(response_t* resp);
 
 
 
