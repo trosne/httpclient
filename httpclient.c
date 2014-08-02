@@ -14,8 +14,9 @@
 
 
 
-
-#define HTTP_1_1_STR "HTTP/1.1"
+#define HTTP_PORT     80
+#define HTTPS_PORT    443
+#define HTTP_1_1_STR  "HTTP/1.1"
 
 static const char* HTTP_REQUESTS[] =
 {
@@ -204,6 +205,20 @@ static void socket_close(socket_t socket)
     close(socket);
 }
 
+static void free_header(http_header_t* p_header)
+{
+  if (p_header->content_type != NULL)
+    free(p_header->content_type);
+  if (p_header->encoding != NULL)
+    free(p_header->encoding);
+  if (p_header->status_text != NULL)
+    free(p_header->status_text);
+  if (p_header->redirect_addr != NULL)
+    free(p_header->redirect_addr);
+
+  free(p_header);
+}
+
 static void dissect_header(char* data, http_response_t* p_resp)
 {
   p_resp->p_header = (http_header_t*) malloc(sizeof(http_header_t));
@@ -211,11 +226,20 @@ static void dissect_header(char* data, http_response_t* p_resp)
   char* content = data;
   const char* header_end = strstr(content, "\r\n\r\n");
   
+
+  /* handle first line. FORMAT:[HTTP/1.1 <STATUS_CODE> <STATUS_TEXT>] */
   content = strchr(data, ' ');
   if (content == NULL)
     return;
   
   p_resp->p_header->status_code = atoi(content);
+  content = strchr(content + 1, ' ') + 1;
+
+  size_t status_text_len = strchr(content, '\r') - content;
+  
+  p_resp->p_header->status_text = (char*) malloc(status_text_len);
+  memcpy(p_resp->p_header->status_text, content, status_text_len);
+
   p_resp->p_header->content_type = NULL;
   p_resp->p_header->encoding = NULL;
 
@@ -238,16 +262,27 @@ static void dissect_header(char* data, http_response_t* p_resp)
       content = strchr(content, ' ');
       word_to_string(content, &p_resp->p_header->encoding);
     }
+    else if (strstr(content, "Location:") == content || strstr(content, "location:") == content)
+    {
+      content = strchr(content, ' ');
+      word_to_string(content, &p_resp->p_header->redirect_addr);
+    }
   }
 }
- 
-http_response_t* http_request(const char* address, const http_req_t http_req)
-{
-  http_response_t* p_resp = (http_response_t*) malloc(sizeof(http_response_t));
-  memset(p_resp, 0, sizeof(http_response_t));
-  
 
-  int portno = 80;
+/**
+* performs the actual http request. 
+*/
+static char* _http_request(const char* address, http_req_t http_req, http_ret_t* p_ret, uint32_t* resp_len)
+{
+  
+  int portno = HTTP_PORT;
+
+  if (strstr(address, "https://") != NULL)
+  {
+    portno = HTTPS_PORT;
+  }
+
   struct hostent* server;
 
   char host_addr[256];
@@ -255,8 +290,8 @@ http_response_t* http_request(const char* address, const http_req_t http_req)
 
   if (!dissect_address(address, host_addr, 256, resource_addr, 256))
   {
-    p_resp->status = HTTP_ERR_DISSECT_ADDR;
-    return p_resp;
+    *p_ret = HTTP_ERR_DISSECT_ADDR;
+    return NULL;
   }
 
   /* do DNS lookup */
@@ -264,8 +299,8 @@ http_response_t* http_request(const char* address, const http_req_t http_req)
 
   if (server == NULL)
   {
-    p_resp->status = HTTP_ERR_NO_SUCH_HOST;
-    return p_resp;
+    *p_ret = HTTP_ERR_NO_SUCH_HOST;
+    return NULL;
   }
   
   /* open socket to host */
@@ -273,8 +308,8 @@ http_response_t* http_request(const char* address, const http_req_t http_req)
 
   if (sock < 0)
   {
-    p_resp->status = HTTP_ERR_OPENING_SOCKET;
-    return p_resp;
+    *p_ret = HTTP_ERR_OPENING_SOCKET;
+    return NULL;
   }
 
   /* Default timeout is too long */
@@ -289,32 +324,99 @@ http_response_t* http_request(const char* address, const http_req_t http_req)
 
   if (len < 0)
   {
-    p_resp->status = HTTP_ERR_WRITING;
-    return p_resp;
+    *p_ret = HTTP_ERR_WRITING;
+    return NULL;
   }
 
-  uint8_t resp_str[80000];
+  uint32_t buffer_len = 10000;
+  uint8_t* resp_str = (uint8_t*) malloc(buffer_len);
   uint32_t tot_len = 0;
   uint32_t cycles = 0;
+
   do{
-    memset(&resp_str[tot_len], 0, 80000 - tot_len);
-    len = recv(sock, &resp_str[tot_len], 80000, 0);
+    memset(&resp_str[tot_len], 0, buffer_len - tot_len);
+    len = recv(sock, &resp_str[tot_len], buffer_len, 0);
 
     if (len <= 0 && cycles > 0)
       break;
 
     tot_len += len;
+
+    if (tot_len >= buffer_len)
+    {
+      buffer_len += 10000;
+      resp_str = (uint8_t*) realloc(resp_str, buffer_len);
+      if (resp_str == NULL)
+      {
+        *p_ret = HTTP_ERR_OUT_OF_MEM;
+        return NULL;
+      }
+    }
+    
     ++cycles;
 
   } while (true);
 
-  /* header ends with an empty line */
-  uint8_t* body = strstr(resp_str, "\r\n\r\n") + 4;
-  uint32_t header_len = (body - resp_str);
-  uint32_t body_len = (tot_len - header_len);
+  resp_str = (uint8_t*) realloc(resp_str, tot_len);
 
-  /* place data in response header */
-  dissect_header(resp_str, p_resp);
+
+  *resp_len = tot_len;
+  
+  socket_close(sock);
+
+  return resp_str;
+}
+
+http_response_t* http_request(char* const address, const http_req_t http_req)
+{
+  http_response_t* p_resp = (http_response_t*) malloc(sizeof(http_response_t));
+  memset(p_resp, 0, sizeof(http_response_t));
+  
+  uint32_t tot_len, header_len, body_len;
+  uint8_t *body, *resp_str;
+
+  char* address_copy = address;
+
+  /* loop until a non-redirect page is found (up to 5 times) */
+  for (uint8_t redirects = 0; redirects < 5; ++redirects)
+  {
+    resp_str = _http_request(address_copy, http_req, &p_resp->status, &tot_len);
+
+    /* header ends with an empty line */
+    body = strstr(resp_str, "\r\n\r\n") + 4;
+    header_len = (body - resp_str);
+    body_len = (tot_len - header_len);
+
+    /* place data in response header */
+    dissect_header(resp_str, p_resp);
+
+    printf("RESP:\n%s\n", resp_str);
+    
+    if (p_resp->p_header->status_code >= 300 && p_resp->p_header->status_code < 400)
+    {
+      if (p_resp->p_header->redirect_addr == NULL)
+      {
+        p_resp->status = HTTP_ERR_BAD_HEADER;
+        return p_resp;
+      }
+
+      if (address_copy != address)
+        free(address_copy);
+
+      address_copy = (char*) malloc(strlen(p_resp->p_header->redirect_addr));
+      strcpy(address_copy, p_resp->p_header->redirect_addr);
+
+      free_header(p_resp->p_header);
+      p_resp->p_header = NULL;
+
+      free(resp_str);
+      resp_str = NULL;
+    }
+    else
+    {
+      break;
+    }
+  }
  
   /* if contents are compressed, uncompress it before placing it in the struct */
   if (p_resp->p_header->encoding != NULL && strstr(p_resp->p_header->encoding, "gzip") != NULL)
@@ -346,11 +448,10 @@ http_response_t* http_request(const char* address, const http_req_t http_req)
   }
   else
   {
-    p_resp->status = HTTP_ERR_READING;
+    printf("RESP:\n%s\n", resp_str);
+    p_resp->status = HTTP_EMPTY_BODY;
     return p_resp;
   }
-
-  socket_close(sock);
 
   return p_resp;
 }

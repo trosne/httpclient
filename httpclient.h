@@ -21,12 +21,15 @@ typedef uint32_t http_req_t;
 typedef enum
 {
   HTTP_SUCCESS = 0,
+  HTTP_EMPTY_BODY,
   HTTP_ERR_OPENING_SOCKET,
   HTTP_ERR_DISSECT_ADDR,
   HTTP_ERR_NO_SUCH_HOST,
   HTTP_ERR_CONNECTING,
   HTTP_ERR_WRITING,
-  HTTP_ERR_READING
+  HTTP_ERR_READING,
+  HTTP_ERR_OUT_OF_MEM,
+  HTTP_ERR_BAD_HEADER
 } http_ret_t;
 
 
@@ -35,6 +38,8 @@ typedef struct
   char* content_type;
   char* encoding;
   uint16_t status_code;
+  char* status_text;
+  char* redirect_addr;
 } http_header_t;
 
 typedef struct
@@ -52,7 +57,7 @@ typedef struct
 * @param http_req: HTTP request type, any of the HTTP_REQ_* defines in the module
 * @param resp: pointer to a reponse_t struct that will receive the response to the request
 */
-http_response_t* http_request(const char* address, const http_req_t http_req);
+http_response_t* http_request(char* const address, const http_req_t http_req);
 
 /**
 * @brief convenience function to dispose of the response struct

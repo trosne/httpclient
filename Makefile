@@ -1,2 +1,2 @@
 all: 
-	gcc -o test main.c httpclient.c -lz -lm -std=gnu99
+	gcc -o example example.c httpclient.c -lz -lm -std=gnu99
