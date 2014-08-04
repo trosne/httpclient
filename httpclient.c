@@ -15,7 +15,7 @@
 
 #define BUFFER_CHUNK_SIZE 10240
 #define HTTP_PORT         80
-#define HTTPS_PORT        443
+#define HTTPS_PORT        80 /* no https support for now */
 #define HTTP_1_1_STR      "HTTP/1.1"
 
 static const char* HTTP_REQUESTS[] =
@@ -121,11 +121,13 @@ static void print_status(http_ret_t status)
 
 static bool build_http_request(const char* host, const char* resource, const http_req_t http_req, char* request, const size_t max_req_size)
 {
-  sprintf(request, "%s %s %s\r\nHost: %s \r\n\r\n", 
+  sprintf(request, "%s %s %s\r\nHost: %s\r\nAccept-Encoding: gzip\r\nReferer: http://%s%s\r\n\r\n", 
       HTTP_REQUESTS[http_req],
       resource,
       HTTP_1_1_STR,
-      host);
+      host,
+      host,
+      resource);
   return true;
 }
 
@@ -327,11 +329,11 @@ static char* _http_request(const char* address, http_req_t http_req, http_ret_t*
   }
 
   /* Default timeout is too long */
-  socket_set_timeout(sock, 0, 500000);
+  socket_set_timeout(sock, 1, 0);
 
-  char http_req_str[512];
+  char http_req_str[1024];
 
-  build_http_request(host_addr, resource_addr, http_req, http_req_str, 256);
+  build_http_request(host_addr, resource_addr, http_req, http_req_str, 1024);
 
   /* send http request */
   int len = write(sock, http_req_str, strlen(http_req_str));
@@ -353,7 +355,7 @@ static char* _http_request(const char* address, http_req_t http_req, http_ret_t*
   {
     len = recv(sock, &resp_str[tot_len], buffer_len - tot_len, 0);
 
-    if (len <= 0)
+    if (len <= 0 && cycles >= 0)
       break;
 
     tot_len += len;
@@ -395,9 +397,8 @@ static char* _http_request(const char* address, http_req_t http_req, http_ret_t*
   }
   resp_str = new_str;
 
-  resp_str[tot_len - 1] = '\0';
-
-  *resp_len = (tot_len + 1);
+//  resp_str[tot_len - 1] = '\0';
+  *resp_len = (tot_len);
   
   socket_close(sock);
 
@@ -467,12 +468,22 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
   if (p_resp->p_header->encoding != NULL && strstr(p_resp->p_header->encoding, "gzip") != NULL)
   {
     /* content length is always stored in the 4 last bytes */
-    uint32_t content_len;
+    uint32_t content_len = 0;
     memcpy(&content_len, resp_str + tot_len - 4, 4);
 
-    p_resp->contents = (char*) malloc(content_len * 2);
-    
+    /* safe guard against insane sizes */
+    content_len = ((content_len < 30 * body_len) ? content_len : 30 * body_len);
+
+    p_resp->contents = (char*) malloc(content_len);
+
+    if (p_resp->contents == NULL)
+    {
+      p_resp->status = HTTP_ERR_OUT_OF_MEM;
+      return p_resp;
+    }
+
     z_stream infstream;
+    memset(&infstream, 0, sizeof(z_stream));
     infstream.avail_in = (uInt)(body_len);
     infstream.next_in = (Bytef *)body; 
     infstream.avail_out = (uInt)content_len;
