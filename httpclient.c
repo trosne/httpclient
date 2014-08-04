@@ -13,10 +13,10 @@
 #include <netdb.h>
 
 
-
-#define HTTP_PORT     80
-#define HTTPS_PORT    443
-#define HTTP_1_1_STR  "HTTP/1.1"
+#define BUFFER_CHUNK_SIZE 10240
+#define HTTP_PORT         80
+#define HTTPS_PORT        443
+#define HTTP_1_1_STR      "HTTP/1.1"
 
 static const char* HTTP_REQUESTS[] =
 {
@@ -63,8 +63,9 @@ static bool dissect_address(const char* address, char* host, const size_t max_ho
     /* remove slash from host if any */
     if (slash_pos != NULL)
       strchr(host, '/')[0] = '\0';
-
-    strcpy(resource, "/index.html");
+    
+    //strcpy(resource, "/index.html");
+    strcpy(resource, "/");
     return true;
   }
 
@@ -221,11 +222,24 @@ static void free_header(http_header_t* p_header)
 
 static void dissect_header(char* data, http_response_t* p_resp)
 {
+  if (strlen(data) == 0)
+  {
+    p_resp->p_header = NULL;
+    return;
+  }
   p_resp->p_header = (http_header_t*) malloc(sizeof(http_header_t));
 
   char* content = data;
-  const char* header_end = strstr(content, "\r\n\r\n");
-  
+  char* header_end = strstr(content, "\r\n\r\n");
+  if (header_end == NULL)
+  {
+    header_end = content + strlen(content);
+  }
+  else
+  {
+    /* explicitly null terminate header, to satisfy strstr() */
+    header_end[0] = '\0';
+  }
 
   /* handle first line. FORMAT:[HTTP/1.1 <STATUS_CODE> <STATUS_TEXT>] */
   content = strchr(data, ' ');
@@ -242,6 +256,7 @@ static void dissect_header(char* data, http_response_t* p_resp)
 
   p_resp->p_header->content_type = NULL;
   p_resp->p_header->encoding = NULL;
+  p_resp->p_header->redirect_addr = NULL;
 
   while (content <= header_end)
   {
@@ -275,7 +290,6 @@ static void dissect_header(char* data, http_response_t* p_resp)
 */
 static char* _http_request(const char* address, http_req_t http_req, http_ret_t* p_ret, uint32_t* resp_len)
 {
-  
   int portno = HTTP_PORT;
 
   if (strstr(address, "https://") != NULL)
@@ -328,39 +342,62 @@ static char* _http_request(const char* address, http_req_t http_req, http_ret_t*
     return NULL;
   }
 
-  uint32_t buffer_len = 10000;
+  uint32_t buffer_len = BUFFER_CHUNK_SIZE;
   uint8_t* resp_str = (uint8_t*) malloc(buffer_len);
-  uint32_t tot_len = 0;
+  memset(resp_str, 0, buffer_len);
+  int32_t tot_len = 0;
   uint32_t cycles = 0;
+  
+  /* Read response from host */
+  do
+  {
+    len = recv(sock, &resp_str[tot_len], buffer_len - tot_len, 0);
 
-  do{
-    memset(&resp_str[tot_len], 0, buffer_len - tot_len);
-    len = recv(sock, &resp_str[tot_len], buffer_len, 0);
-
-    if (len <= 0 && cycles > 0)
+    if (len <= 0)
       break;
 
     tot_len += len;
 
     if (tot_len >= buffer_len)
     {
-      buffer_len += 10000;
-      resp_str = (uint8_t*) realloc(resp_str, buffer_len);
-      if (resp_str == NULL)
+      buffer_len += BUFFER_CHUNK_SIZE;
+      uint8_t* newbuf = (uint8_t*) realloc(resp_str, buffer_len);
+
+      if (newbuf == NULL)
       {
         *p_ret = HTTP_ERR_OUT_OF_MEM;
+        free(resp_str);
         return NULL;
       }
+
+      resp_str = newbuf;
+      memset(&resp_str[buffer_len - BUFFER_CHUNK_SIZE], 0, BUFFER_CHUNK_SIZE);
     }
     
     ++cycles;
 
   } while (true);
 
-  resp_str = (uint8_t*) realloc(resp_str, tot_len);
+  if (tot_len <= 0)
+  {
+    *p_ret = HTTP_ERR_READING;
+    free(resp_str);
+    return NULL;
+  }
+  /* shave buffer */
+  uint8_t* new_str = (uint8_t*) realloc(resp_str, tot_len);
+  
+  if (new_str == NULL)
+  {
+    *p_ret = HTTP_ERR_OUT_OF_MEM;
+    free(resp_str);
+    return NULL;
+  }
+  resp_str = new_str;
 
+  resp_str[tot_len - 1] = '\0';
 
-  *resp_len = tot_len;
+  *resp_len = (tot_len + 1);
   
   socket_close(sock);
 
@@ -377,10 +414,15 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
 
   char* address_copy = address;
 
-  /* loop until a non-redirect page is found (up to 5 times) */
+  /* loop until a non-redirect page is found (up to 5 times, as per spec recommendation) */
   for (uint8_t redirects = 0; redirects < 5; ++redirects)
   {
     resp_str = _http_request(address_copy, http_req, &p_resp->status, &tot_len);
+
+    if (resp_str == NULL)
+    {
+      return p_resp;
+    }
 
     /* header ends with an empty line */
     body = strstr(resp_str, "\r\n\r\n") + 4;
@@ -389,8 +431,11 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
 
     /* place data in response header */
     dissect_header(resp_str, p_resp);
-
-    printf("RESP:\n%s\n", resp_str);
+    if (p_resp->p_header == NULL)
+    {
+      p_resp->status = HTTP_ERR_BAD_HEADER;
+      return p_resp;
+    }
     
     if (p_resp->p_header->status_code >= 300 && p_resp->p_header->status_code < 400)
     {
@@ -448,10 +493,12 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
   }
   else
   {
-    printf("RESP:\n%s\n", resp_str);
+    free(resp_str);
     p_resp->status = HTTP_EMPTY_BODY;
     return p_resp;
   }
 
+  free(resp_str);
   return p_resp;
 }
+
