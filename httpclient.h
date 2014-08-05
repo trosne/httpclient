@@ -2,7 +2,7 @@
 #define _HTTP_CLIENT_H__
 #include <stdint.h>
 #include <stdbool.h>
-//#include "collection.h"
+#include <string.h>
 
 #define HTTP_REQ_GET      0
 #define HTTP_REQ_HEAD     1
@@ -29,7 +29,8 @@ typedef enum
   HTTP_ERR_WRITING,
   HTTP_ERR_READING,
   HTTP_ERR_OUT_OF_MEM,
-  HTTP_ERR_BAD_HEADER
+  HTTP_ERR_BAD_HEADER,
+  HTTP_ERR_TOO_MANY_REDIRECTS
 } http_ret_t;
 
 
@@ -52,19 +53,20 @@ typedef struct
 
 
 /**
-* @brief Make a HTTP request to the given server address
+* @brief: Make a HTTP request to the given server address
 * @param address: address you want to request
 * @param http_req: HTTP request type, any of the HTTP_REQ_* defines in the module
-* @param resp: pointer to a reponse_t struct that will receive the response to the request
+* @param header_lines: Array of additional HTTP header lines to be added to the header.
+* A NULL pointer indicates no additional header lines.
+* @param header_line_count: number of elements in header_lines array. 
 */
-http_response_t* http_request(char* const address, const http_req_t http_req);
+http_response_t* http_request(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count);
 
 /**
-* @brief convenience function to dispose of the response struct
-* @param resp: response struct to free
+* @brief: Make a HTTP request with a body. Works exactly like http_request()
+* @param body: Body to be added to HTTP request
 */
-//void http_resp_dispose(response_t* resp);
+http_response_t* http_request_w_body(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count, char* body);
 
 
-
-#endif /* _HTTP_CLIENT_H__ */
+#endif

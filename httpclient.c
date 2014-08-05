@@ -161,15 +161,24 @@ static void print_status(http_ret_t status)
   printf("errno: %s\n", strerror(errno));
 }
 
-static bool build_http_request(const char* host, const char* resource, const http_req_t http_req, char* request, const size_t max_req_size)
+static bool build_http_request(const char* host, const char* resource, const http_req_t http_req, char* request, 
+    const size_t max_req_size, char** header_lines, const size_t header_line_count, char* const body)
 {
-  sprintf(request, "%s %s %s\r\nHost: %s\r\nAccept-Encoding: gzip\r\nReferer: http://%s%s\r\n\r\n", 
+  sprintf(request, "%s %s %s\r\nHost: %s\r\nAccept-Encoding: gzip\r\nReferer: http://%s%s\r\n", 
       HTTP_REQUESTS[http_req],
       resource,
       HTTP_1_1_STR,
       host,
       host,
       resource);
+  for (uint16_t i = 0; i < header_line_count; ++i)
+  {
+    sprintf(request, "%s%s\r\n", request, header_lines[i]);
+  }
+  strcat(request, "\r\n");
+  if (body != NULL)
+    strcat(request, body);
+
   return true;
 }
 
@@ -332,7 +341,8 @@ static void dissect_header(char* data, http_response_t* p_resp)
 /**
 * performs the actual http request. 
 */
-static char* _http_request(char* const address, http_req_t http_req, http_ret_t* p_ret, uint32_t* resp_len)
+static char* _http_request(char* const address, http_req_t http_req, http_ret_t* p_ret, 
+    uint32_t* resp_len, char** header_lines, size_t header_line_count, char* const body)
 {
   int portno = HTTP_PORT;
 
@@ -373,12 +383,23 @@ static char* _http_request(char* const address, http_req_t http_req, http_ret_t*
   /* Default timeout is too long */
   socket_set_timeout(sock, 1, 0);
 
-  char http_req_str[1024];
+  size_t http_req_size = 256 + strlen(address);
+  for (size_t i = 0; i < header_line_count; ++i)
+  {
+    http_req_size += strlen(header_lines[i]);
+  }
 
-  build_http_request(host_addr, resource_addr, http_req, http_req_str, 1024);
+  if (body != NULL)
+    http_req_size += strlen(body);
+
+  char* http_req_str = (char*) malloc(http_req_size); 
+
+  build_http_request(host_addr, resource_addr, http_req, http_req_str, http_req_size, header_lines, header_line_count, body);
 
   /* send http request */
   int len = write(sock, http_req_str, strlen(http_req_str));
+  
+  free(http_req_str);
 
   if (len < 0)
   {
@@ -439,7 +460,6 @@ static char* _http_request(char* const address, http_req_t http_req, http_ret_t*
   }
   resp_str = new_str;
 
-//  resp_str[tot_len - 1] = '\0';
   *resp_len = (tot_len);
   
   socket_close(sock);
@@ -447,33 +467,34 @@ static char* _http_request(char* const address, http_req_t http_req, http_ret_t*
   return resp_str;
 }
 
-http_response_t* http_request(char* const address, const http_req_t http_req)
+http_response_t* http_request_w_body(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count, char* const body)
 {
   http_response_t* p_resp = (http_response_t*) malloc(sizeof(http_response_t));
   memset(p_resp, 0, sizeof(http_response_t));
   
   uint32_t tot_len, header_len, body_len;
-  uint8_t *body, *resp_str;
+  uint8_t *body_pos, *resp_str;
 
   char* address_copy = address;
 
   /* loop until a non-redirect page is found (up to 5 times, as per spec recommendation) */
-  for (uint8_t redirects = 0; redirects < 5; ++redirects)
+  for (uint8_t redirects = 0; redirects < 8; ++redirects)
   {
-    resp_str = _http_request(address_copy, http_req, &p_resp->status, &tot_len);
-
+    resp_str = _http_request(address_copy, http_req, &p_resp->status, &tot_len, header_lines, header_line_count, body);
+    
     if (resp_str == NULL)
     {
       return p_resp;
     }
 
     /* header ends with an empty line */
-    body = strstr(resp_str, "\r\n\r\n") + 4;
-    header_len = (body - resp_str);
+    body_pos = strstr(resp_str, "\r\n\r\n") + 4;
+    header_len = (body_pos - resp_str);
     body_len = (tot_len - header_len);
 
     /* place data in response header */
     dissect_header(resp_str, p_resp);
+
     if (p_resp->p_header == NULL)
     {
       p_resp->status = HTTP_ERR_BAD_HEADER;
@@ -505,6 +526,13 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
       break;
     }
   }
+
+  if (p_resp->p_header == NULL)
+  {
+    p_resp->status = HTTP_ERR_TOO_MANY_REDIRECTS;
+    return p_resp;
+  }
+
  
   /* if contents are compressed, uncompress it before placing it in the struct */
   if (p_resp->p_header->encoding != NULL && strstr(p_resp->p_header->encoding, "gzip") != NULL)
@@ -524,14 +552,14 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
       return p_resp;
     }
 
+    /* zlib decompression (gzip) */
     z_stream infstream;
     memset(&infstream, 0, sizeof(z_stream));
     infstream.avail_in = (uInt)(body_len);
-    infstream.next_in = (Bytef *)body; 
+    infstream.next_in = (Bytef *)body_pos; 
     infstream.avail_out = (uInt)content_len;
     infstream.next_out = (Bytef *)p_resp->contents;
 
-    // the actual DE-compression work.
     inflateInit2(&infstream, 16 + MAX_WBITS);
     inflate(&infstream, Z_NO_FLUSH);
     inflateEnd(&infstream);
@@ -541,11 +569,12 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
   else if (body_len > 0)
   {
     p_resp->contents = (char*) malloc(body_len);
-    memcpy(p_resp->contents, body, body_len);
+    memcpy(p_resp->contents, body_pos, body_len);
     p_resp->length = body_len;
   }
   else
   {
+    /* response without body */
     free(resp_str);
     p_resp->status = HTTP_EMPTY_BODY;
     return p_resp;
@@ -555,3 +584,8 @@ http_response_t* http_request(char* const address, const http_req_t http_req)
   return p_resp;
 }
 
+
+http_response_t* http_request(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count)
+{
+  http_request_w_body(address, http_req, header_lines, header_line_count, NULL);
+}

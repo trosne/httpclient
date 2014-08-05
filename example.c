@@ -39,6 +39,9 @@ static void print_status(http_ret_t status)
     case HTTP_ERR_BAD_HEADER:
       printf("ERROR: BAD HEADER\n");
       return;
+    case HTTP_ERR_TOO_MANY_REDIRECTS:
+      printf("ERROR: TOO MANY REDIRECTS\n");
+      return;
     default:
       printf("ERROR: UNKNOWN STATUS CODE\n");
   }
@@ -64,7 +67,7 @@ int main(int argc, char* args[])
   }
 
   char* addr = args[1];
-  http_response_t* p_resp = http_request(addr, HTTP_REQ_GET);
+  http_response_t* p_resp = http_request(addr, HTTP_REQ_GET, NULL, 0);
   if (p_resp->status == HTTP_SUCCESS)
   {
     printf("RESPONSE FROM %s:\n%s\n", addr, p_resp->contents);
