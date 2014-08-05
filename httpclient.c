@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <ctype.h>
 
 
 #define BUFFER_CHUNK_SIZE 10240
@@ -31,6 +32,34 @@ static const char* HTTP_REQUESTS[] =
   "PATCH"
 };
 
+static char* URL_encode(char* const addr)
+{
+  uint16_t special_chars_count = 0;
+  static const char reserved_chars[] = "!*\'();:@&=+$,/=#[]-_.~?";
+
+  /* do one round to find the size */
+  for (char* c = &addr[0]; *c != '\0'; ++c)
+  {
+    if (!isalpha(*c) && !isdigit(*c) && strchr(reserved_chars, *c) == NULL)
+      ++special_chars_count;
+  }
+
+  char* enc_addr = (char*) malloc(strlen(addr) + 2 * special_chars_count + 1);
+  char* new = &enc_addr[0];
+  for (char* old = &addr[0]; *old != '\0';)
+  {
+    if (!isalpha(*old) && !isdigit(*old) && strchr(reserved_chars, *old) == NULL)
+    {
+      new += sprintf(new, "%%%X", *old++);
+    }      
+    else
+      *new++ = *old++;
+  }
+
+  *new = '\0';
+
+  return enc_addr;
+}
 
 static void word_to_string(const char* const word, char** str)
 {
@@ -47,11 +76,13 @@ static void word_to_string(const char* const word, char** str)
   memcpy(*str, &word[start], i - start);
 }
 
-static bool dissect_address(const char* address, char* host, const size_t max_host_length, char* resource, const size_t max_resource_length)
+static bool dissect_address(char* const address, char* host, const size_t max_host_length, char* resource, const size_t max_resource_length)
 {
+  char* encoded_addr = URL_encode(address);
+
   /* remove any protocol headers (f.e. "http://") before we search for first '/' */
-  char* start_pos = strstr(address, "://");
-  start_pos = ((start_pos == NULL) ? (char*) address : start_pos + 3);
+  char* start_pos = strstr(encoded_addr, "://");
+  start_pos = ((start_pos == NULL) ? (char*) encoded_addr : start_pos + 3);
 
   char* slash_pos = strchr(start_pos, '/');
 
@@ -66,25 +97,36 @@ static bool dissect_address(const char* address, char* host, const size_t max_ho
     
     //strcpy(resource, "/index.html");
     strcpy(resource, "/");
+    free(encoded_addr);
     return true;
   }
 
   char* addr_end = strchr(slash_pos, '\0');
 
   if (start_pos >= slash_pos - 1)
+  {
+    free(encoded_addr);
     return false;
+  }
 
   if (slash_pos - start_pos > max_host_length)
+  {
+    free(encoded_addr);
     return false;
+  }
 
   if (addr_end - slash_pos > max_resource_length)
+  {
+    free(encoded_addr);
     return false;
+  }
 
   strcpy(host, start_pos);
   host[slash_pos - start_pos] = '\0';
   strcpy(resource, slash_pos);
   resource[addr_end - slash_pos] = '\0';
 
+  free(encoded_addr);
   return true;
 }
 
@@ -290,7 +332,7 @@ static void dissect_header(char* data, http_response_t* p_resp)
 /**
 * performs the actual http request. 
 */
-static char* _http_request(const char* address, http_req_t http_req, http_ret_t* p_ret, uint32_t* resp_len)
+static char* _http_request(char* const address, http_req_t http_req, http_ret_t* p_ret, uint32_t* resp_len)
 {
   int portno = HTTP_PORT;
 
