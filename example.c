@@ -42,6 +42,9 @@ static void print_status(http_ret_t status)
     case HTTP_ERR_TOO_MANY_REDIRECTS:
       printf("ERROR: TOO MANY REDIRECTS\n");
       return;
+    case HTTP_ERR_IS_HTTPS:
+      printf("ERROR: ADDRESS IS HTTPS, NOT SUPPORTED.\n");
+      return;
     default:
       printf("ERROR: UNKNOWN STATUS CODE\n");
   }

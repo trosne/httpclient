@@ -16,7 +16,7 @@
 
 #define BUFFER_CHUNK_SIZE 10240
 #define HTTP_PORT         80
-#define HTTPS_PORT        80 /* no https support for now */
+#define HTTPS_PORT        443 /* no https support for now */
 #define HTTP_1_1_STR      "HTTP/1.1"
 
 static const char* HTTP_REQUESTS[] =
@@ -348,7 +348,8 @@ static char* _http_request(char* const address, http_req_t http_req, http_ret_t*
 
   if (strstr(address, "https://") != NULL)
   {
-    portno = HTTPS_PORT;
+    *p_ret = HTTP_ERR_IS_HTTPS;
+    return NULL;
   }
 
   struct hostent* server;
