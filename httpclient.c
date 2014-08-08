@@ -72,7 +72,8 @@ static void word_to_string(const char* const word, char** str)
   while (word[i] != ' ' && word[i] != '\r' && word[i] != '\n')
     ++i;
   
-  *str = (char*) malloc(i - start);
+  *str = (char*) malloc(i - start + 1);
+  (*str)[i - start] = '\0';
   memcpy(*str, &word[start], i - start);
 }
 
@@ -569,7 +570,8 @@ http_response_t* http_request_w_body(char* const address, const http_req_t http_
   }
   else if (body_len > 0)
   {
-    p_resp->contents = (char*) malloc(body_len);
+    p_resp->contents = (char*) malloc(body_len + 1);
+    p_resp->contents[body_len] = '\0';
     memcpy(p_resp->contents, body_pos, body_len);
     p_resp->length = body_len;
   }
@@ -577,6 +579,7 @@ http_response_t* http_request_w_body(char* const address, const http_req_t http_
   {
     /* response without body */
     free(resp_str);
+    p_resp->contents = NULL;
     p_resp->status = HTTP_EMPTY_BODY;
     return p_resp;
   }
@@ -588,7 +591,7 @@ http_response_t* http_request_w_body(char* const address, const http_req_t http_
 
 http_response_t* http_request(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count)
 {
-  http_request_w_body(address, http_req, header_lines, header_line_count, NULL);
+  return http_request_w_body(address, http_req, header_lines, header_line_count, NULL);
 }
 
 

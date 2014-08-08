@@ -69,12 +69,13 @@ int main(int argc, char* args[])
     return 64;
   }
 
-  char* addr = args[1];
+  char* addr = NULL;
+  addr = args[1];
   http_response_t* p_resp = http_request(addr, HTTP_REQ_GET, NULL, 0);
   if (p_resp->status == HTTP_SUCCESS)
   {
     /* received file. If it is an image, store it.*/
-    if (strstr(p_resp->p_header->content_type, "image") != NULL)
+    if (p_resp->p_header->content_type != NULL && strstr(p_resp->p_header->content_type, "image") != NULL)
     {
       /* find last '/' in address to get the image name */
       char* img = &addr[0];
