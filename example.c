@@ -73,7 +73,34 @@ int main(int argc, char* args[])
   http_response_t* p_resp = http_request(addr, HTTP_REQ_GET, NULL, 0);
   if (p_resp->status == HTTP_SUCCESS)
   {
-    printf("RESPONSE FROM %s:\n%s\n", addr, p_resp->contents);
+    /* received file. If it is an image, store it.*/
+    if (strstr(p_resp->p_header->content_type, "image") != NULL)
+    {
+      /* find last '/' in address to get the image name */
+      char* img = &addr[0];
+      char* temp = &addr[0];
+      do
+      {
+        temp = strchr(img, '/');
+        if (temp == NULL)
+          break;
+        img = temp + 1;
+      } while(true);
+       
+      /* store as local file */ 
+      FILE* output = fopen(img, "wb");
+      if (output != NULL)
+      {
+        fwrite(p_resp->contents, 1, p_resp->length, output);
+        fclose(output);
+      }
+      printf("Stored image as %s\n", img);
+    }
+    else
+    {
+      /* if not an image, print it. */
+      printf("RESPONSE FROM %s:\n%s\n", addr, p_resp->contents);
+    }
   }
   else if (p_resp->status == HTTP_EMPTY_BODY)
   {
