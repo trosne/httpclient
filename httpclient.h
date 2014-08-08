@@ -69,5 +69,10 @@ http_response_t* http_request(char* const address, const http_req_t http_req, ch
 */
 http_response_t* http_request_w_body(char* const address, const http_req_t http_req, char** header_lines, size_t header_line_count, char* body);
 
+/**
+* @brief: Destructor for http_response_t structs.
+* @param p_http_resp: http_response_t struct pointer to be free'd
+*/
+void http_response_free(http_response_t* p_http_resp);
 
 #endif

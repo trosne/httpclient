@@ -590,3 +590,16 @@ http_response_t* http_request(char* const address, const http_req_t http_req, ch
 {
   http_request_w_body(address, http_req, header_lines, header_line_count, NULL);
 }
+
+
+void http_response_free(http_response_t* p_http_resp)
+{
+  if (p_http_resp == NULL)
+    return;
+  free_header(p_http_resp->p_header);
+  if (p_http_resp->contents != NULL)
+    free(p_http_resp->contents);
+  free(p_http_resp);
+}
+
+
